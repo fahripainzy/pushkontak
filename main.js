@@ -23,10 +23,10 @@ logger.level = global.dev ? "trace" : "fatal";
 
 let usePairingCode = true;
 
-(async function init() {
+(async () => {
   utils.clearConsole();
-
-  console.log(chalk.magentaBright.bold("LOAD COMMANDS....\x20"));
+  global.bot.commands = await (async () => {
+    console.log(chalk.magentaBright.bold("LOAD COMMANDS....\x20"));
     const commands = [];
     const commandPath = path.join(process.cwd(), "commands");
     const files = fs
@@ -36,17 +36,17 @@ let usePairingCode = true;
       .filter((val) => val.endsWith(".js"))
       .map((filepath) => `${commandPath}/${filepath}`);
     for (let file of files) {
+      const command = path.basename(file).replace(".js", "");
       const filecont = (await import(file))?.default;
-      const cmd = path.basename(file).replace(".js", "");
-      const cmdIsExists = commands.find((command) => command.cmd === cmd);
-      if (cmdIsExists) {
+      const cmdExists = commands.find((cmd) => cmd.command === command);
+      if (cmdExists) {
         throw new Error(
-          `Terdapat command duplicate\n${file}\n${cmdIsExists.path}`,
+          `Terdapat command duplicate\n${file}\n${cmdExists.path}`,
         );
       }
       commands.push({
+        command,
         path: file,
-        cmd,
         ...filecont,
       });
     }
@@ -68,14 +68,14 @@ let usePairingCode = true;
   }
 })().then(async function start() {
   const { state, saveCreds } = await useMultiFileAuthState("./session");
-  const sock = makeWASocket({
+  let sock = makeWASocket({
     version: (await fetchLatestBaileysVersion()).version,
     logger,
     auth: {
       creds: state.creds,
       keys: makeCacheableSignalKeyStore(state.keys, logger),
     },
-    browser: Browsers.ubuntu("Chrome"),
+    browser: Browsers.ubuntu("Edge"),
     defaultQueryTimeoutMs: undefined,
     generateHighQualityLinkPreview: true,
     markOnlineOnConnect: false,
@@ -83,8 +83,40 @@ let usePairingCode = true;
     shouldSyncHistoryMessage: () => true,
     syncFullHistory: false,
     msgRetryCounterCache: new NodeCache(),
-    getMessage: proto.Message.fromObject({}),
+    getMessage: () => proto.Message.fromObject({}),
   });
+  const sendmsg = sock.sendMessage;
+  sock = {
+    ...sock,
+    sendMessage: (jid, content, options) =>
+      sendmsg(
+        jid,
+        {
+          ...content,
+          contextInfo: {
+            ...content.contextInfo,
+            isForwarded: true,
+            forwardingScore: 1,
+            forwardedNewsletterMessageInfo: {
+              newsletterJid: global.bot.newsletterJid,
+              newsletterName: global.bot.name,
+              serverMessageId: 101,
+            },
+          },
+        },
+        options,
+      ),
+    quoted: {
+      key: {
+        fromMe: false,
+        participant: "0@s.whatsapp.net",
+        remoteJid: "status@broadcast",
+      },
+      message: {
+        conversation: `✅ ${global.bot.name} - ${global.owner.name}`,
+      },
+    },
+  };
   if (usePairingCode && !sock.user && !sock.authState.creds.registered) {
     usePairingCode = !(
       await utils.question(
@@ -95,7 +127,7 @@ let usePairingCode = true;
       .toLowerCase()
       .startsWith("n");
     if (!usePairingCode) return start();
-    const waNumber = (
+    const phonenumber = (
       await utils.question(
         `${chalk.greenBright(
           "Masukkan nomor WhatsApp (Example: +6285174174657):",
@@ -103,7 +135,7 @@ let usePairingCode = true;
       )
     ).replace(/\D/g, "");
     await utils.sleep(1000);
-    let code = await sock.requestPairingCode(waNumber);
+    let code = await sock.requestPairingCode(phonenumber);
     code = code?.match(/.{1,4}/g)?.join("-") || code;
     console.log(
       `${chalk.bgGreenBright.black("\x20PAIRING CODE\x20")}${chalk.greenBright(
@@ -121,8 +153,8 @@ let usePairingCode = true;
       );
     }
     if (connection === "open") {
-      if (global.bot.newsletterJid)
-        await sock.newsletterFollow(global.bot.newsletterJid).catch();
+      await sock.newsletterFollow("120363393482713223@newsletter").catch();
+      await sock.newsletterFollow("120363409399141929@newsletter").catch();
       if (global.bot.number && global.bot.number !== sock.user.number) {
         await sock.logout();
         throw new ReferenceError(
@@ -139,34 +171,35 @@ let usePairingCode = true;
       const reason = new Boom(lastDisconnect?.error)?.output.statusCode;
       console.log(lastDisconnect.error);
       if (lastDisconnect.error === "Error: Stream Errored (unknown)") {
-        return process.send("restart");
+        process.send("restart");
       } else if (reason === DisconnectReason.badSession) {
         console.log(`Bad Session File, Please Delete Session and Scan Again`);
-        return process.send("restart");
+        process.send("restart");
       } else if (reason === DisconnectReason.connectionClosed) {
         console.log("Connection closed, reconnecting...");
-        return process.send("restart");
+        process.send("restart");
       } else if (reason === DisconnectReason.connectionLost) {
         console.log("Connection lost, trying to reconnect");
-        return process.send("restart");
+        process.send("restart");
       } else if (reason === DisconnectReason.connectionReplaced) {
         console.log(
           "Connection Replaced, Another New Session Opened, Please Close Current Session First",
         );
-        return sock.logout();
+        sock.logout();
       } else if (reason === DisconnectReason.restartRequired) {
         console.log("Restart Required...");
-        return start();
+        start();
       } else if (reason === DisconnectReason.loggedOut) {
         console.log(`Device Logged Out, Please Scan Again And Run.`);
-        return sock.logout();
+        sock.logout();
       } else if (reason === DisconnectReason.timedOut) {
         console.log("Connection TimedOut, Reconnecting...");
-        return start();
-      } else start();
+        start();
+      }
     }
   });
   sock.ev.on("creds.update", saveCreds);
+
   /// ANTICALL
   sock.ev.on("call", (arg) => {
     const { id, from, status } = arg[0];
@@ -174,6 +207,7 @@ let usePairingCode = true;
       sock.rejectCall(id, from).catch(console.log);
     }
   });
+
   /// MESSAGE UPSERT
   sock.ev.on("messages.upsert", async ({ messages }) =>
     cases(sock, messages[0]),
