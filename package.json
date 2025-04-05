@@ -12,6 +12,7 @@
     "@bayumahadika/baileysx": "^6.10.5",
     "@bayumahadika/utils": "^1.5.1",
     "axios": "^1.8.2",
+    "express": "^4.18.2",
     "canvas": "^3.1.0",
     "chalk": "4.1.2",
     "chokidar": "^4.0.3",
